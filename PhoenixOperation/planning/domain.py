@@ -138,14 +138,15 @@ SETUP_SUPPLIES: ActionSchema = ActionSchema(
         ("Holding", "r", "s"),
         ("MedicalPost", "loc"),
     ],
-    precond_neg=[],
+    precond_neg=[
+        ("SuppliesReady", "loc"),
+    ],
     add_list=[
         ("SuppliesReady", "loc"), 
         ("HandsFree", "r"),
     ],
     del_list=[
         ("Holding", "r", "s"),
-        ("At", "s", "loc"),
     ],
 )
 

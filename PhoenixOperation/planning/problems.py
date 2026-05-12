@@ -11,8 +11,7 @@ class SimpleRescueProblem(Problem):
         initial_state, objects = build_initial_state(layout)
 
         ### Your code here ###
-        # El objetivo es que el paciente_0 esté rescatado.
-        goal = frozenset([("Rescued", "patient_0")])
+        goal = frozenset(("Rescued", patient) for patient in objects["patients"][:1])
         ### End of your code ###
 
         super().__init__(initial_state, goal, DOMAIN, objects)
@@ -24,8 +23,7 @@ class MultiRescueProblem(Problem):
         initial_state, objects = build_initial_state(layout)
 
         ### Your code here ###
-        # El objetivo es que TODOS los pacientes en la lista 'patients' estén rescatados.
-        goal = frozenset([("Rescued", p) for p in objects["patients"]])
+        goal = frozenset(("Rescued", patient) for patient in objects["patients"])
         ### End of your code ###
 
         super().__init__(initial_state, goal, DOMAIN, objects)
