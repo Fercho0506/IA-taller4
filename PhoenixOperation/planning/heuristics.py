@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from planning.pddl import ActionSchema, State, Objects
+from planning.pddl import (
+    ActionSchema,
+    State,
+    Objects,
+    get_all_groundings,
+    get_applicable_actions,
+)
 
 
 def nullHeuristic(
@@ -45,6 +51,35 @@ def ignorePreconditionsHeuristic(
          Remember: with no preconditions, every grounding is "applicable".
     """
     ### Your code here ###
+    
+    unsatisfied = set(goal - state)
+
+    if not unsatisfied:
+        return 0
+
+    # Todas las acciones posibles (sin importar aplicabilidad)
+    actions = get_all_groundings(domain, objects)
+
+    count = 0
+
+    while unsatisfied:
+        best_action = None
+        best_cover = set()
+
+        for action in actions:
+            covered = unsatisfied & set(action.add_list)
+            if len(covered) > len(best_cover):
+                best_cover = covered
+                best_action = action
+
+        if not best_action or not best_cover:
+            # No se puede cubrir más (caso raro, objetivo imposible)
+            return float("inf")
+
+        unsatisfied -= best_cover
+        count += 1
+
+    return count
 
     ### End of your code ###
 
@@ -79,5 +114,34 @@ def ignoreDeleteListsHeuristic(
          each step (preconditions still apply in the relaxed model).
     """
     ### Your code here ###
+    
+    current = set(state)
+    goal_set = set(goal)
+
+    if goal_set.issubset(current):
+        return 0
+
+    steps = 0
+
+    while not goal_set.issubset(current):
+        applicable = get_applicable_actions(frozenset(current), domain, objects)
+
+        best_action = None
+        best_gain = set()
+
+        for action in applicable:
+            gain = (goal_set - current) & set(action.add_list)
+            if len(gain) > len(best_gain):
+                best_gain = gain
+                best_action = action
+
+        if not best_action or not best_gain:
+            return float("inf")
+
+        # aplicar SOLO add_list (ignorar delete list)
+        current |= set(best_action.add_list)
+        steps += 1
+
+    return steps
 
     ### End of your code ###
