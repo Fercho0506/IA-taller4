@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-
+from collections import deque
 from planning.pddl import (
     Action,
     ActionSchema,
@@ -137,14 +137,15 @@ def forwardBFS(problem: Problem) -> list[Action]:
          to get (next_state, action, cost) triples. Track visited states to
          avoid revisiting the same state twice (graph search, not tree search).
     """
-    estadoInicial= problem.getStartState()
-    frontera= Queue()
-    frontera.push((estadoInicial, []))
-    
-    visitados= {estadoInicial}
+    ### Your code here ###
+    estadoInicial = problem.getStartState()
+    frontera = deque()
+    frontera.append((estadoInicial, []))
 
-    while not frontera.isEmpty():
-        estadoActual, acciones= frontera.pop()
+    visitados = {estadoInicial}
+
+    while frontera:
+        estadoActual, acciones = frontera.popleft()
 
         if problem.isGoalState(estadoActual):
             return acciones
@@ -152,7 +153,7 @@ def forwardBFS(problem: Problem) -> list[Action]:
         for estadoSiguiente, accion, costo in problem.getSuccessors(estadoActual):
             if estadoSiguiente not in visitados:
                 visitados.add(estadoSiguiente)
-                frontera.push((estadoSiguiente, acciones+[accion]))
+                frontera.append((estadoSiguiente, acciones + [accion]))
 
     return []
     ### End of your code ###
@@ -180,7 +181,11 @@ def regress(goal_set: State, action: Action) -> State | None:
          Check relevance first, then check for contradictions, then compute.
     """
     ### Your code here ###
-
+    if not action.add_list & goal_set:
+        return None
+    if action.del_list & goal_set:
+        return None
+    return frozenset((goal_set - action.add_list) | action.precond_pos)
     ### End of your code ###
 
 
@@ -203,7 +208,95 @@ def backwardSearch(problem: Problem) -> list[Action]:
          Pickable) that are false in the initial state — these are dead ends.
     """
     ### Your code here ###
+    initial = problem.getStartState()
+    goal = problem.goal
 
+    if goal.issubset(initial):
+        return []
+
+    static_preds = {"Adjacent", "MedicalPost", "Pickable"}
+    static_fluents = frozenset(f for f in initial if f[0] in static_preds)
+
+    all_actions = get_all_groundings(problem.domain, problem.objects)
+
+    filtered_actions = []
+    for action in all_actions:
+        static_preconds = frozenset(f for f in action.precond_pos if f[0] in static_preds)
+        if static_preconds.issubset(static_fluents):
+            filtered_actions.append(action)
+    all_actions = filtered_actions
+
+    ignore_preds = {"Free", "Adjacent", "MedicalPost", "Pickable"}
+
+    def filtered_regress(goal_set, action):
+        """Regresión que filtra predicados redundantes del resultado."""
+        if not action.add_list & goal_set:
+            return None
+        if action.del_list & goal_set:
+            return None
+        new_goal = (goal_set - action.add_list) | action.precond_pos
+        new_goal = frozenset(f for f in new_goal if f[0] not in ignore_preds)
+        return new_goal
+
+    from collections import defaultdict
+    add_index = defaultdict(list)
+    for action in all_actions:
+        for fluent in action.add_list:
+            if fluent[0] not in ignore_preds:
+                add_index[fluent].append(action)
+
+    initial_filtered = frozenset(f for f in initial if f[0] not in ignore_preds)
+    goal_filtered = frozenset(f for f in goal if f[0] not in ignore_preds)
+
+    from collections import deque
+    frontera = deque()
+    frontera.append((goal_filtered, []))
+    visitados = {goal_filtered}
+
+    while frontera:
+        current_goal, plan = frontera.popleft()
+        problem._expanded += 1
+
+        unsatisfied = current_goal - initial_filtered
+
+        candidate_actions = set()
+        for fluent in unsatisfied:
+            for action in add_index.get(fluent, []):
+                candidate_actions.add(action)
+
+        for action in candidate_actions:
+            new_goal = filtered_regress(current_goal, action)
+            if new_goal is None or new_goal in visitados:
+                continue
+
+            at_locs = {}
+            holding_count = 0
+            hands_free = False
+            consistent = True
+            for f in new_goal:
+                if f[0] == "At" and len(f) == 3:
+                    entity = f[1]
+                    if entity in at_locs and at_locs[entity] != f[2]:
+                        consistent = False
+                        break
+                    at_locs[entity] = f[2]
+                elif f[0] == "Holding":
+                    holding_count += 1
+                elif f[0] == "HandsFree":
+                    hands_free = True
+
+            if not consistent or holding_count > 1 or (hands_free and holding_count > 0):
+                continue
+
+            new_plan = [action] + plan
+
+            if new_goal.issubset(initial_filtered):
+                return new_plan
+
+            visitados.add(new_goal)
+            frontera.append((new_goal, new_plan))
+
+    return []
     ### End of your code ###
 
 
