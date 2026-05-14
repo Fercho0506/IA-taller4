@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
+from itertools import permutations
+
 from planning.pddl import Action, Problem, apply_action, is_applicable
+from planning.domain import PICKUP, PUTDOWN, RESCUE, SETUP_SUPPLIES, MOVE
+from planning.utils import Queue
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +67,55 @@ def hierarchicalSearch(problem: Problem, hlas: list[HLA]) -> list[Action]:
            2. Executing it from the initial state reaches a goal state.
          To simulate execution, apply each action in order using apply_action().
     """
-    ### Your code here ###
+    def execute(plan: list[Action]) -> tuple[bool, frozenset]:
+        state = problem.initial_state
+        for action in plan:
+            if not is_applicable(state, action):
+                return False, state
+            state = apply_action(state, action)
+        return True, state
 
-    ### End of your code ###
+    def primitive_prefix_is_valid(plan: list[Action | HLA]) -> bool:
+        state = problem.initial_state
+        for step in plan:
+            if not isinstance(step, Action):
+                return True
+            if not is_applicable(state, step):
+                return False
+            state = apply_action(state, step)
+        return True
+
+    if not hlas:
+        return []
+
+    frontier = Queue()
+    for hla in hlas:
+        frontier.push([hla])
+
+    visited: set[tuple[str, ...]] = set()
+
+    while not frontier.isEmpty():
+        plan = frontier.pop()
+        key = tuple(step.name for step in plan)
+        if key in visited:
+            continue
+        visited.add(key)
+        if not primitive_prefix_is_valid(plan):
+            continue
+
+        if is_plan_primitive(plan):
+            primitive_plan = [step for step in plan if isinstance(step, Action)]
+            valid, final_state = execute(primitive_plan)
+            if valid and problem.isGoalState(final_state):
+                return primitive_plan
+            continue
+
+        hla_index = next(i for i, step in enumerate(plan) if not is_primitive(step))
+        hla = plan[hla_index]
+        for refinement in hla.refinements:
+            frontier.push(plan[:hla_index] + refinement + plan[hla_index + 1 :])
+
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +139,149 @@ def build_htn_hierarchy(problem: Problem) -> list[HLA]:
          adjacent cells. PrepareSupplies and ExtractPatient chain Navigate HLAs
          with primitive PickUp, SetupSupplies, PutDown, and Rescue actions.
     """
-    ### Your code here ###
+    cells = problem.objects["cells"]
+    patients = problem.objects["patients"]
+    supplies = problem.objects["supplies"]
+    medical_posts = problem.objects["medical_posts"]
+    if not patients or not supplies or not medical_posts:
+        return []
 
-    ### End of your code ###
+    robot = problem.objects["robots"][0]
+    medical_post = medical_posts[0]
+
+    at_fluents = [fluent for fluent in problem.initial_state if fluent[0] == "At"]
+    locations = {entity: loc for _, entity, loc in at_fluents}
+
+    adjacency: dict[tuple[int, int], list[tuple[int, int]]] = {cell: [] for cell in cells}
+    for fluent in problem.initial_state:
+        if fluent[0] == "Adjacent":
+            adjacency[fluent[1]].append(fluent[2])
+
+    def ground(schema, binding: dict[str, object]) -> Action:
+        return schema.ground(binding)
+
+    def move_action(origin, destination) -> Action:
+        return ground(
+            MOVE,
+            {"r": robot, "from_cell": origin, "to_cell": destination},
+        )
+
+    def find_paths(start, goal, limit: int = 3) -> list[list[tuple[int, int]]]:
+        if start == goal:
+            return [[start]]
+
+        paths: list[list[tuple[int, int]]] = []
+        frontier = deque([[start]])
+        shortest_len: int | None = None
+        max_extra_steps = 2
+
+        while frontier and len(paths) < limit:
+            path = frontier.popleft()
+            if shortest_len is not None and len(path) > shortest_len + max_extra_steps:
+                continue
+
+            current = path[-1]
+            for neighbor in adjacency.get(current, []):
+                if neighbor in path:
+                    continue
+                next_path = path + [neighbor]
+                if neighbor == goal:
+                    shortest_len = len(next_path) if shortest_len is None else shortest_len
+                    paths.append(next_path)
+                elif shortest_len is None or len(next_path) < shortest_len + max_extra_steps:
+                    frontier.append(next_path)
+
+        return paths
+
+    navigate_cache: dict[tuple[tuple[int, int], tuple[int, int]], HLA] = {}
+
+    def navigate(start, goal) -> HLA:
+        key = (start, goal)
+        if key not in navigate_cache:
+            refinements = []
+            for path in find_paths(start, goal):
+                moves = [
+                    move_action(path[i], path[i + 1])
+                    for i in range(len(path) - 1)
+                ]
+                refinements.append(moves)
+            navigate_cache[key] = HLA(f"Navigate({start}->{goal})", refinements)
+        return navigate_cache[key]
+
+    def prepare_supplies(supply: str, start, post) -> HLA:
+        supply_loc = locations[supply]
+        setup = ground(
+            SETUP_SUPPLIES,
+            {"r": robot, "s": supply, "loc": post},
+        )
+        pickup = ground(
+            PICKUP,
+            {"r": robot, "obj": supply, "loc": supply_loc},
+        )
+        return HLA(
+            f"PrepareSupplies({supply},{post})",
+            [[navigate(start, supply_loc), pickup, navigate(supply_loc, post), setup]],
+        )
+
+    def extract_patient(patient: str, start, post) -> HLA:
+        patient_loc = locations[patient]
+        pickup = ground(
+            PICKUP,
+            {"r": robot, "obj": patient, "loc": patient_loc},
+        )
+        putdown = ground(
+            PUTDOWN,
+            {"r": robot, "obj": patient, "loc": post},
+        )
+        rescue = ground(
+            RESCUE,
+            {"r": robot, "p": patient, "loc": post},
+        )
+        return HLA(
+            f"ExtractPatient({patient},{post})",
+            [[navigate(start, patient_loc), pickup, navigate(patient_loc, post), putdown, rescue]],
+        )
+
+    def full_rescue_mission(
+        supply: str | None,
+        patient: str,
+        start,
+        post,
+        prepare: bool = True,
+    ) -> HLA:
+        if not prepare or supply is None:
+            return HLA(
+                f"FullRescueMission({patient},{post})",
+                [[extract_patient(patient, start, post)]],
+            )
+
+        return HLA(
+            f"FullRescueMission({supply},{patient},{post})",
+            [[
+                prepare_supplies(supply, start, post),
+                extract_patient(patient, post, post),
+            ]],
+        )
+
+    initial_robot_pos = locations[robot]
+    patient_orders = list(permutations(patients))
+
+    root_refinements = []
+    for patient_order in patient_orders:
+        for first_supply in supplies:
+            mission_start = initial_robot_pos
+            missions = []
+            for index, patient in enumerate(patient_order):
+                missions.append(
+                    full_rescue_mission(
+                        first_supply if index == 0 else None,
+                        patient,
+                        mission_start,
+                        medical_post,
+                        prepare=index == 0,
+                    )
+                )
+                mission_start = medical_post
+            root_refinements.append(missions)
+
+    return [HLA("FullRescueMissionRoot", root_refinements)]
